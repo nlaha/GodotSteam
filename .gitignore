@@ -8,6 +8,7 @@
 **/*.obj
 **/*.VC.db
 
+godotsteam/sdk
+*.pdb
 .vscode/
-bin/
 .sconsign.dblite
