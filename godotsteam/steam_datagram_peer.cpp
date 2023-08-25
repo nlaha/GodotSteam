@@ -57,7 +57,7 @@ void SteamDatagramRelayPeer::OnConnectionStatusChanged(SteamNetConnectionStatusC
     // print connection status using GetDetailedConnectionStatus
     char *buffer = new char[1024];
     SteamNetworkingSockets()->GetDetailedConnectionStatus(pCallback->m_hConn, buffer, 1024);
-    UtilityFunctions::print("SteamDatagramRelayPeer: Connection status: %s\n", buffer);
+    UtilityFunctions::print("SteamDatagramRelayPeer: Connection status:" + String(buffer));
 
     // check if we received a connection
     if (pCallback->m_info.m_eState == k_ESteamNetworkingConnectionState_Connecting)
