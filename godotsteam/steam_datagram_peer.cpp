@@ -168,6 +168,9 @@ String SteamDatagramRelayPeer::host_game_p2p()
     char *buffer = new char[SteamNetworkingIdentity::k_cchMaxString];
     // copy string from steam_net_identity to steam_identity
     steam_net_identity.ToString(buffer, SteamNetworkingIdentity::k_cchMaxString);
+
+    this->_connection_status = MultiplayerPeer::CONNECTION_CONNECTED;
+
     // print
     String steam_identity = String(buffer);
     UtilityFunctions::print("SteamDatagramRelayPeer: Host identity: " + steam_identity);
