@@ -56,6 +56,8 @@ protected:
 
     int _target_peer;
 
+    bool _use_relay_network;
+
 public:
     SteamDatagramRelayPeer();
     ~SteamDatagramRelayPeer();
@@ -65,7 +67,7 @@ public:
     // host game
     String host_game_p2p();
     // join game
-    void join_game_p2p(const String &steam_identity);
+    void join_game_p2p(const String &steam_identity_or_ip);
 
     void add_peer(uint64 steam_id);
 

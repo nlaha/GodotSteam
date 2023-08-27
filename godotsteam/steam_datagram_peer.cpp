@@ -5,6 +5,7 @@
 #include <godot_cpp/classes/global_constants.hpp>
 #include <godot_cpp/classes/multiplayer_peer.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/classes/os.hpp>
 
 using namespace godot;
 
@@ -21,11 +22,19 @@ void SteamDatagramRelayPeer::OnRelayStatusUpdate(SteamRelayNetworkStatus_t *pCal
     // log status updates
     switch (pCallback->m_eAvail)
     {
+    case k_ESteamNetworkingAvailability_Attempting:
+        UtilityFunctions::print("SteamDatagramRelayPeer: Attempting to initialize relay network\n");
+        break;
+    case k_ESteamNetworkingAvailability_Waiting:
+        UtilityFunctions::print("SteamDatagramRelayPeer: Waiting for relay network\n");
+        break;
     case k_ESteamNetworkingAvailability_CannotTry:
         ERR_PRINT("SteamDatagramRelayPeer: Cannot try to use relay network");
+        this->_use_relay_network = false;
         break;
     case k_ESteamNetworkingAvailability_Failed:
         ERR_PRINT("SteamDatagramRelayPeer: Failed to initialize relay network");
+        this->_use_relay_network = false;
         break;
     case k_ESteamNetworkingAvailability_Previously:
         UtilityFunctions::print("SteamDatagramRelayPeer: Previously used relay network\n");
@@ -35,6 +44,7 @@ void SteamDatagramRelayPeer::OnRelayStatusUpdate(SteamRelayNetworkStatus_t *pCal
         break;
     case k_ESteamNetworkingAvailability_Current:
         UtilityFunctions::print("SteamDatagramRelayPeer: Relay network initialized successfully\n");
+        this->_use_relay_network = true;
         break;
     }
 }
@@ -57,7 +67,9 @@ void SteamDatagramRelayPeer::OnConnectionStatusChanged(SteamNetConnectionStatusC
     // print connection status using GetDetailedConnectionStatus
     char *buffer = new char[1024];
     SteamNetworkingSockets()->GetDetailedConnectionStatus(pCallback->m_hConn, buffer, 1024);
-    UtilityFunctions::print("SteamDatagramRelayPeer: Connection status:" + String(buffer));
+    UtilityFunctions::print("SteamDatagramRelayPeer [Connection status] " + String(buffer));
+    // delete buffer
+    delete[] buffer;
 
     // check if we received a connection
     if (pCallback->m_info.m_eState == k_ESteamNetworkingConnectionState_Connecting)
@@ -105,6 +117,11 @@ void SteamDatagramRelayPeer::OnConnectionStatusChanged(SteamNetConnectionStatusC
         _connection_status = MultiplayerPeer::CONNECTION_CONNECTED;
         UtilityFunctions::print("SteamDatagramRelayPeer: Connected!\n");
 
+        // print peer id
+        uint64 steam_id_64 = pCallback->m_info.m_identityRemote.GetSteamID64();
+        int peer_id = this->_steam_id_to_peer_id[steam_id_64];
+        UtilityFunctions::print("SteamDatagramRelayPeer: Peer id: " + String::num_int64(peer_id) + "\n");
+
         connections.push_back(pCallback->m_hConn);
     }
 
@@ -138,6 +155,7 @@ void SteamDatagramRelayPeer::OnConnectionStatusChanged(SteamNetConnectionStatusC
 /// @brief Constructor
 SteamDatagramRelayPeer::SteamDatagramRelayPeer()
 {
+    this->_use_relay_network = true;
 }
 
 /// @brief Destructor
@@ -150,14 +168,32 @@ SteamDatagramRelayPeer::~SteamDatagramRelayPeer()
 // host game
 String SteamDatagramRelayPeer::host_game_p2p()
 {
-    // initialize connection to Steam Relay Network
-    // this enables P2P functionality
-    UtilityFunctions::print("SteamDatagramRelayPeer: Initializing relay network...\n");
-    SteamNetworkingUtils()->InitRelayNetworkAccess();
-
     // print
     UtilityFunctions::print("SteamDatagramRelayPeer: Hosting game...\n");
-    this->m_hListenSock = SteamNetworkingSockets()->CreateListenSocketP2P(0, 0, nullptr);
+    if (this->_use_relay_network)
+    {
+        UtilityFunctions::print("SteamDatagramRelayPeer: Using relay network\n");
+        this->m_hListenSock = SteamNetworkingSockets()->CreateListenSocketP2P(0, 0, nullptr);
+    }
+    else
+    {
+        UtilityFunctions::print("SteamDatagramRelayPeer: Using direct connection\n");
+        SteamNetworkingIPAddr steam_net_addr;
+        steam_net_addr.Clear();
+        steam_net_addr.m_port = 25585;
+        this->m_hListenSock = SteamNetworkingSockets()->CreateListenSocketIP(steam_net_addr, 0, nullptr);
+        // print server port
+        UtilityFunctions::print("SteamDatagramRelayPeer: Server port: " + String::num_int64(steam_net_addr.m_port) + "\n");
+    }
+
+    if (this->m_hListenSock == k_HSteamListenSocket_Invalid)
+    {
+        ERR_PRINT("SteamDatagramRelayPeer: Failed to create listen socket");
+        return "";
+    }
+
+    UtilityFunctions::print("Connection listen socket id: " + String::num_int64(this->m_hListenSock) + "\n");
+
     // return the identity of the host
     SteamNetworkingIdentity steam_net_identity;
     SteamNetworkingSockets()->GetIdentity(&steam_net_identity);
@@ -174,29 +210,57 @@ String SteamDatagramRelayPeer::host_game_p2p()
     // print
     String steam_identity = String(buffer);
     UtilityFunctions::print("SteamDatagramRelayPeer: Host identity: " + steam_identity);
+
+    // delete buffer
+    delete[] buffer;
+
     return steam_identity;
 }
 
 // join game
-void SteamDatagramRelayPeer::join_game_p2p(const String &steam_identity)
+void SteamDatagramRelayPeer::join_game_p2p(const String &steam_identity_or_ip)
 {
-    // initialize connection to Steam Relay Network
-    // this enables P2P functionality
-    UtilityFunctions::print("SteamDatagramRelayPeer: Initializing relay network...\n");
-    SteamNetworkingUtils()->InitRelayNetworkAccess();
-
     SteamNetworkingIdentity steam_net_identity;
-    steam_net_identity.ParseString(steam_identity.utf8().get_data());
-    // print
-    UtilityFunctions::print("SteamDatagramRelayPeer: Joining host with identity: " + steam_identity);
+    bool success = steam_net_identity.ParseString(steam_identity_or_ip.utf8().get_data());
+    // validate identity
+    if (success != true || steam_net_identity.m_eType == k_ESteamNetworkingIdentityType_UnknownType)
+    {
+        UtilityFunctions::print("SteamDatagramRelayPeer: Invalid identity, assuming ip address");
+        // assume ip address
+        UtilityFunctions::print("SteamDatagramRelayPeer: Joining host with ip address: " + steam_identity_or_ip);
+    }
+    else
+    {
+        // print
+        UtilityFunctions::print("SteamDatagramRelayPeer: Joining host with identity: " + steam_identity_or_ip);
+    }
 
     // connect to host
-    this->m_hConn = SteamNetworkingSockets()->ConnectP2P(steam_net_identity, 0, 0, nullptr);
+    if (this->_use_relay_network)
+    {
+        UtilityFunctions::print("SteamDatagramRelayPeer: Using relay network\n");
+        this->m_hConn = SteamNetworkingSockets()->ConnectP2P(steam_net_identity, 0, 0, nullptr);
+    }
+    else
+    {
+        UtilityFunctions::print("SteamDatagramRelayPeer: Using direct connection\n");
+        SteamNetworkingIPAddr steam_net_addr;
+        steam_net_addr.Clear();
+        // ip address must also include port
+        steam_net_addr.ParseString(steam_identity_or_ip.utf8().get_data());
+        this->m_hConn = SteamNetworkingSockets()->ConnectByIPAddress(steam_net_addr, 0, nullptr);
+    }
 
-    // print connection status using GetDetailedConnectionStatus
-    char *buffer = new char[1024];
-    SteamNetworkingSockets()->GetDetailedConnectionStatus(this->m_hConn, buffer, 1024);
-    UtilityFunctions::print("SteamDatagramRelayPeer: Connection status: %s\n", buffer);
+    // error handling
+    if (this->m_hConn == k_HSteamNetConnection_Invalid)
+    {
+        ERR_PRINT("SteamDatagramRelayPeer: Failed to connect to host");
+        return;
+    }
+
+    UtilityFunctions::print("SteamDatagramRelayPeer: Connection id: " + String::num_int64(this->m_hConn) + "\n");
+
+    this->_connection_status = MultiplayerPeer::CONNECTION_CONNECTING;
 }
 
 void SteamDatagramRelayPeer::_close()
